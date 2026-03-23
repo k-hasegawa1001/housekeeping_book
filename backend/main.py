@@ -1,4 +1,9 @@
 from fastapi import FastAPI
+from database import engine, Base
+import models
+
+# データベースのテーブルを作成（既に存在する場合は何もしない）
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
