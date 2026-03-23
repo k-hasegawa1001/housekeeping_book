@@ -1,14 +1,16 @@
 import { useState, useEffect } from "react";
 
 function App() {
-  // --- 1. 状態管理（State） ---
+  const [token, setToken] = useState(localStorage.getItem("token") || null);
+  const [loginData, setLoginData] = useState({ username: "", password: "" });
+  const [loginError, setLoginError] = useState("");
+
   const [transactions, setTransactions] = useState([]);
   const [categories, setCategories] = useState({});
   const [paymentMethods, setPaymentMethods] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // フォーム入力値
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split("T")[0],
     category_id: "",
@@ -17,13 +19,38 @@ function App() {
     note: "",
   });
 
-  // 絞り込み・並べ替え用のステート（追加）
-  const [filterCategory, setFilterCategory] = useState(""); // 空文字なら「すべて」
-  const [sortOrder, setSortOrder] = useState("desc"); // 'desc'=新しい順, 'asc'=古い順
+  const [filterCategory, setFilterCategory] = useState("");
+  const [sortOrder, setSortOrder] = useState("desc");
 
-  // --- 2. データ取得（初回のみ実行） ---
+  // --- ★修正: 参照される前に handleLogout を定義 ---
+  const handleLogout = () => {
+    setToken(null);
+    localStorage.removeItem("token");
+    setTransactions([]);
+  };
+
+  // --- カスタムfetch関数 ---
+  const fetchWithAuth = (url, options = {}) => {
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        Authorization: `Bearer ${token}`,
+      },
+    }).then((res) => {
+      if (res.status === 401) {
+        handleLogout(); // ここで安全に呼び出せます
+        throw new Error("認証の有効期限が切れました。再度ログインしてください。");
+      }
+      if (!res.ok) throw new Error("通信エラーが発生しました");
+      return res.json();
+    });
+  };
+
+  // --- データ取得処理 ---
   const fetchData = () => {
-    Promise.all([fetch("/api/transactions").then((res) => res.json()), fetch("/api/categories").then((res) => res.json()), fetch("/api/payment-methods").then((res) => res.json())])
+    setLoading(true);
+    Promise.all([fetchWithAuth("/api/transactions"), fetchWithAuth("/api/categories"), fetchWithAuth("/api/payment-methods")])
       .then(([txData, catData, pmData]) => {
         const catMap = {};
         catData.forEach((c) => {
@@ -49,17 +76,52 @@ function App() {
         setLoading(false);
       })
       .catch((err) => {
-        console.error("Fetch error:", err);
+        console.error(err);
         setError(err.message);
         setLoading(false);
       });
   };
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (token) {
+      fetchData();
+    }
+  }, [token]);
 
-  // --- 3. イベントハンドラ ---
+  // --- ログイン処理 ---
+  const handleLoginChange = (e) => {
+    const { name, value } = e.target;
+    setLoginData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleLoginSubmit = (e) => {
+    e.preventDefault();
+    setLoginError("");
+
+    const params = new URLSearchParams();
+    params.append("username", loginData.username);
+    params.append("password", loginData.password);
+
+    fetch("/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params,
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("ユーザー名またはパスワードが間違っています");
+        return res.json();
+      })
+      .then((data) => {
+        setToken(data.access_token);
+        localStorage.setItem("token", data.access_token);
+        setLoginData({ username: "", password: "" });
+      })
+      .catch((err) => {
+        setLoginError(err.message);
+      });
+  };
+
+  // --- 家計簿データの登録処理 ---
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -68,7 +130,7 @@ function App() {
   const handleSubmit = (e) => {
     e.preventDefault();
 
-    fetch("/api/transactions", {
+    fetchWithAuth("/api/transactions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -79,53 +141,64 @@ function App() {
         note: formData.note,
       }),
     })
-      .then((res) => {
-        if (!res.ok) throw new Error("登録に失敗しました");
-        return res.json(); // APIが返す「作成された新しいデータ1件」を受け取る
-      })
       .then((newTransaction) => {
-        // ★全件再取得せず、現在の配列の末尾に新しいデータを追加するだけ！
         setTransactions((prev) => [...prev, newTransaction]);
-
-        // フォームの金額とメモをリセット
         setFormData((prev) => ({ ...prev, amount: "", note: "" }));
       })
-      .catch((err) => {
-        alert(err.message);
-      });
+      .catch((err) => alert(err.message));
   };
 
-  // --- 4. 画面表示のためのデータ加工（絞り込みと並べ替え） ---
+  // --- 表示用データの加工 ---
   const displayedTransactions = transactions
-    // 絞り込み処理
-    .filter((t) => {
-      if (filterCategory === "") return true; // 「すべて」の場合は全部通す
-      return t.category_id === Number(filterCategory);
-    })
-    // 並べ替え処理
+    .filter((t) => filterCategory === "" || t.category_id === Number(filterCategory))
     .sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
       if (sortOrder === "desc") {
-        // 新しい順（降順）: 日付が新しいものが上、同じならIDが大きい（新しい）ものが上
         if (dateA === dateB) return b.id - a.id;
         return dateB - dateA;
       } else {
-        // 古い順（昇順）: 日付が古いものが上、同じならIDが小さい（古い）ものが上
         if (dateA === dateB) return a.id - b.id;
         return dateA - dateB;
       }
     });
 
-  // --- 5. 描画（Render） ---
-  if (loading) return <div>読み込み中...</div>;
-  if (error) return <div>エラーが発生しました: {error}</div>;
+  if (!token) {
+    return (
+      <div style={{ padding: "50px", fontFamily: "sans-serif", maxWidth: "400px", margin: "0 auto" }}>
+        <h2>家計簿アプリ - ログイン</h2>
+        {loginError && <div style={{ color: "red", marginBottom: "10px" }}>{loginError}</div>}
+        <form onSubmit={handleLoginSubmit} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+          <div>
+            <label>ユーザー名:</label>
+            <br />
+            <input type="text" name="username" value={loginData.username} onChange={handleLoginChange} required style={{ width: "100%", padding: "8px" }} />
+          </div>
+          <div>
+            <label>パスワード:</label>
+            <br />
+            <input type="password" name="password" value={loginData.password} onChange={handleLoginChange} required style={{ width: "100%", padding: "8px" }} />
+          </div>
+          <button type="submit" style={{ padding: "10px", backgroundColor: "#007BFF", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" }}>
+            ログイン
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: "20px", fontFamily: "sans-serif" }}>
-      <h1>家計簿アプリ</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", maxWidth: "800px" }}>
+        <h1>家計簿アプリ</h1>
+        <button onClick={handleLogout} style={{ padding: "5px 15px", cursor: "pointer" }}>
+          ログアウト
+        </button>
+      </div>
 
-      {/* 登録フォーム */}
+      {loading && <div>読み込み中...</div>}
+      {error && <div style={{ color: "red" }}>エラーが発生しました: {error}</div>}
+
       <div style={{ marginBottom: "30px", padding: "15px", backgroundColor: "#333", borderRadius: "8px", maxWidth: "800px" }}>
         <h2 style={{ marginTop: 0 }}>新規登録</h2>
         <form onSubmit={handleSubmit} style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
@@ -152,7 +225,6 @@ function App() {
         </form>
       </div>
 
-      {/* 絞り込み・並べ替えコントロール */}
       <div style={{ marginBottom: "15px", display: "flex", gap: "15px", alignItems: "center" }}>
         <div>
           <label style={{ marginRight: "5px" }}>カテゴリ絞り込み:</label>
@@ -174,7 +246,6 @@ function App() {
         </div>
       </div>
 
-      {/* テーブル */}
       <table border="1" cellPadding="8" style={{ borderCollapse: "collapse", width: "100%", maxWidth: "800px" }}>
         <thead style={{ backgroundColor: "#555", color: "#fff" }}>
           <tr>
@@ -187,7 +258,6 @@ function App() {
           </tr>
         </thead>
         <tbody>
-          {/* 元の transactions ではなく、加工済みの displayedTransactions をループする */}
           {displayedTransactions.map((t) => (
             <tr key={t.id}>
               <td>{t.id}</td>

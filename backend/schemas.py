@@ -42,3 +42,11 @@ class TransactionCreate(BaseModel):
     amount: int
     date: date
     note: Optional[str] = None
+
+# --- ログイン・認証用スキーマ ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
