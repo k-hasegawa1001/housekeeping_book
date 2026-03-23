@@ -5,12 +5,17 @@ from database import engine, Base, SessionLocal
 import models
 import schemas
 import auth
-
-# ★ 修正: jose ではなく、インストール済みの jwt (PyJWT) をインポート
 import jwt
 from jwt.exceptions import InvalidTokenError
 
+# ★ 追加: seedモジュールを読み込む
+import seed 
+
+# 1. データベースのテーブルを自動作成
 Base.metadata.create_all(bind=engine)
+
+# 2. ★ 追加: テーブル作成直後に、自動でシードデータをチェック＆投入
+seed.seed_data()
 
 app = FastAPI()
 
